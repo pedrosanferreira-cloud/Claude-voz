@@ -337,7 +337,11 @@ public class VozService extends Service {
         if (ocupado) return;
         ocupado = true;
         pararSilencio();
-        falar("Qual projecto?", () -> main.postDelayed(this::comecarReconhecimento, 150));
+        if (Voz.haModelos(this)) {
+            falar("Qual projecto?", () -> main.postDelayed(this::ouvirMinhaVoz, 100));
+        } else {
+            falar("Qual projecto?", () -> main.postDelayed(this::comecarReconhecimento, 150));
+        }
     }
 
     private List<Motores.Combo> combos = new ArrayList<>();
@@ -358,6 +362,34 @@ public class VozService extends Service {
             }
         } catch (Exception ignored) {}
         return l;
+    }
+
+    /** Compara o que foi dito com as gravações da voz do utilizador. */
+    private void ouvirMinhaVoz() {
+        new Thread(() -> {
+            short[] som = Voz.gravar(this, true, null);
+            if (som == null) {
+                main.post(() -> falar("Não ouvi nada. Tente outra vez.", this::terminar));
+                return;
+            }
+            float[][] imp = Voz.impressao(som);
+            if (imp == null) {
+                main.post(() -> falar("Foi muito curto. Tente outra vez.", this::terminar));
+                return;
+            }
+            Voz.Resultado r = Voz.escolher(this, Dados.lerProjectos(this), imp);
+            String info = String.format(java.util.Locale.ROOT, "distância %.1f (limite %.1f)%s",
+                    r.distancia, r.limite, r.projecto == null ? "" : " → " + r.projecto.nome);
+            getSharedPreferences("claudevoz", MODE_PRIVATE).edit().putString("ultima_voz", info).apply();
+            main.post(() -> {
+                if (r.projecto == null) {
+                    falar("Não reconheci o projecto. Tente outra vez.", this::terminar);
+                } else {
+                    Dados.Projecto p = r.projecto;
+                    falar("A abrir " + p.nome, () -> main.post(() -> abrir(p)));
+                }
+            });
+        }).start();
     }
 
     private void comecarReconhecimento() {

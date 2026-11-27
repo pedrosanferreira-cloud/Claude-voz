@@ -215,13 +215,14 @@ public class MainActivity extends Activity {
         raiz.addView(testar);
 
         seccao("3. Projectos");
-        raiz.addView(texto("Para cada projecto: abra-o no claude.ai, copie o link (claude.ai/project/...) e adicione-o aqui.", 13, false));
+        raiz.addView(texto("Para cada projecto: copie o link (claude.ai/project/...), adicione-o aqui e grave a sua voz a dizer o nome 3 vezes, com os phones ligados.", 13, false));
 
         List<Dados.Projecto> lista = Dados.lerProjectos(this);
         for (int i = 0; i < lista.size(); i++) {
             final int idx = i;
             Dados.Projecto pr = lista.get(i);
-            Button item = botao(pr.nome + (pr.alternativas.isEmpty() ? "" : "  (" + pr.alternativas + ")"));
+            int nv = Voz.quantos(this, pr.link);
+            Button item = botao(pr.nome + "   " + (nv >= 3 ? "🎤✅" : "🎤 " + nv + "/3"));
             item.setAllCaps(false);
             item.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
             item.setOnClickListener(v -> editar(idx));
@@ -237,6 +238,8 @@ public class MainActivity extends Activity {
         if (sv.isEmpty()) sb.append("nenhum");
         for (android.content.ComponentName cn : sv) sb.append("\n• ").append(cn.getPackageName());
         String ue = getSharedPreferences("claudevoz", MODE_PRIVATE).getString("ultimo_erro", "");
+        String uv = getSharedPreferences("claudevoz", MODE_PRIVATE).getString("ultima_voz", "");
+        if (!uv.isEmpty()) sb.append("\nÚltima voz: ").append(uv);
         String ok = Motores.descricaoOk(this);
         if (!ok.isEmpty()) sb.append("\nMotor que funciona: ").append(ok);
         if (!ue.isEmpty()) sb.append("\nÚltimo erro: ").append(ue);
@@ -264,11 +267,54 @@ public class MainActivity extends Activity {
         f.addView(nome);
         f.addView(link);
         f.addView(alt);
-        Button gravar = botao("🎤 Gravar como digo o nome");
-        TextView estadoGravacao = texto("Carregue e diga o nome do projecto. Repita 2 ou 3 vezes.", 12, false);
-        gravar.setOnClickListener(v -> gravarNome(alt, estadoGravacao));
+        Button gravar = botao("🎤 Gravar a minha voz");
+        TextView estadoGravacao = texto("", 13, false);
+        Runnable atualizar = () -> {
+            String l = link.getText().toString().trim();
+            int n = l.isEmpty() ? 0 : Voz.quantos(this, l);
+            gravar.setText("🎤 Gravar a minha voz (" + n + " gravadas)");
+            if (estadoGravacao.getText().length() == 0 || n == 0)
+                estadoGravacao.setText(n >= 3 ? "✅ Pronto. Pode gravar mais para melhorar."
+                        : "Carregue e diga o nome do projecto. Faça pelo menos 3 gravações.");
+        };
+        atualizar.run();
+        gravar.setOnClickListener(v -> {
+            String l = link.getText().toString().trim();
+            if (l.isEmpty()) { Toast.makeText(this, "Preencha primeiro o link.", Toast.LENGTH_SHORT).show(); return; }
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                pedirPermissoes(); return;
+            }
+            gravar.setEnabled(false);
+            estadoGravacao.setText("🎙️ Diga agora o nome do projecto…");
+            new Thread(() -> {
+                short[] som = Voz.gravar(this, true,
+                        () -> runOnUiThread(() -> estadoGravacao.setText("🎙️ A ouvir…")));
+                float[][] imp = som == null ? null : Voz.impressao(som);
+                String msg;
+                if (som == null) msg = "Não ouvi nada. Carregue outra vez e fale um pouco mais alto.";
+                else if (imp == null) msg = "Foi muito curto. Carregue outra vez.";
+                else {
+                    try { Voz.guardar(this, l, imp); msg = "✅ Gravado (" + String.format(java.util.Locale.ROOT, "%.1f", som.length / 16000.0) + " s)."; }
+                    catch (Exception e) { msg = "Não consegui guardar: " + e.getMessage(); }
+                }
+                String m = msg;
+                runOnUiThread(() -> {
+                    gravar.setEnabled(true);
+                    estadoGravacao.setText(m);
+                    atualizar.run();
+                });
+            }).start();
+        });
+        Button apagarVoz = botao("Apagar gravações deste projecto");
+        apagarVoz.setOnClickListener(v -> {
+            String l = link.getText().toString().trim();
+            if (!l.isEmpty()) Voz.apagar(this, l);
+            estadoGravacao.setText("");
+            atualizar.run();
+        });
         f.addView(gravar);
         f.addView(estadoGravacao);
+        f.addView(apagarVoz);
 
         AlertDialog.Builder d = new AlertDialog.Builder(this)
                 .setTitle(atual == null ? "Novo projecto" : "Editar projecto")
