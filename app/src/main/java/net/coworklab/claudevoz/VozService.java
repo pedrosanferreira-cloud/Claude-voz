@@ -340,23 +340,10 @@ public class VozService extends Service {
         falar("Qual projecto?", () -> main.postDelayed(this::comecarReconhecimento, 150));
     }
 
-    // tentativas: [serviço de reconhecimento, usar mic dos phones?, língua]
-    private int tentativa = 0;
-    private final List<Object[]> tentativas = new ArrayList<>();
+    private List<Motores.Combo> combos = new ArrayList<>();
+    private int idx = 0, tentadas = 0, repeticoes = 0;
+    private boolean micPhones = true;
     private String ultimoErro = "";
-
-    private void prepararTentativas() {
-        tentativas.clear();
-        List<android.content.ComponentName> servicos = servicosReconhecimento(this);
-        String[] linguas = {"pt-PT", "pt-BR"};
-        for (android.content.ComponentName cn : servicos) {
-            tentativas.add(new Object[]{cn, true, linguas[0]});
-            tentativas.add(new Object[]{cn, false, linguas[0]});
-            tentativas.add(new Object[]{cn, false, linguas[1]});
-        }
-        tentativas.add(new Object[]{null, false, "pt-PT"});
-        tentativa = 0;
-    }
 
     /** Serviços de reconhecimento instalados, com os da Google primeiro. */
     public static List<android.content.ComponentName> servicosReconhecimento(Context c) {
@@ -374,42 +361,41 @@ public class VozService extends Service {
     }
 
     private void comecarReconhecimento() {
-        prepararTentativas();
-        if (tentativas.size() <= 1 && !SpeechRecognizer.isRecognitionAvailable(this)) {
-            falar("O reconhecimento de voz não está disponível neste telemóvel.", this::terminar);
-            return;
-        }
+        combos = Motores.combos(this);
+        idx = Motores.inicio(this, combos.size());
+        tentadas = 0;
+        repeticoes = 0;
+        micPhones = true;
         tentar();
     }
 
+    private void falhar(String frase) {
+        desligarMicBluetooth();
+        aviso("Reconhecimento: " + ultimoErro);
+        falar(frase, this::terminar);
+    }
+
     private void tentar() {
-        if (tentativa >= tentativas.size()) {
-            desligarMicBluetooth();
-            aviso("Reconhecimento falhou. " + ultimoErro);
-            falar("Não ouvi. Erro " + ultimoErro + ". Tente outra vez.", this::terminar);
+        if (tentadas >= combos.size()) {
+            falhar("Não consegui perceber. Tente outra vez.");
             return;
         }
-        Object[] t = tentativas.get(tentativa);
-        android.content.ComponentName cn = (android.content.ComponentName) t[0];
-        boolean micPhones = (Boolean) t[1];
-        String lingua = (String) t[2];
+        final int meu = idx % combos.size();
+        final Motores.Combo combo = combos.get(meu);
         if (micPhones) ligarMicBluetooth(); else desligarMicBluetooth();
         main.postDelayed(() -> {
             if (reconhecedor != null) { try { reconhecedor.destroy(); } catch (Exception ignored) {} }
             try {
-                reconhecedor = cn != null
-                        ? SpeechRecognizer.createSpeechRecognizer(this, cn)
-                        : SpeechRecognizer.createSpeechRecognizer(this);
+                reconhecedor = Motores.criar(this, combo);
             } catch (Exception e) {
-                ultimoErro = "criar: " + e.getClass().getSimpleName();
-                tentativa++;
+                ultimoErro = "criar " + combo.descricao();
+                idx++; tentadas++;
                 tentar();
                 return;
             }
-            final boolean[] ouviuAlgo = {false};
             reconhecedor.setRecognitionListener(new RecognitionListener() {
                 @Override public void onReadyForSpeech(Bundle b) {}
-                @Override public void onBeginningOfSpeech() { ouviuAlgo[0] = true; }
+                @Override public void onBeginningOfSpeech() {}
                 @Override public void onRmsChanged(float v) {}
                 @Override public void onBufferReceived(byte[] b) {}
                 @Override public void onEndOfSpeech() {}
@@ -418,39 +404,43 @@ public class VozService extends Service {
 
                 @Override
                 public void onError(int erro) {
-                    ultimoErro = erro + " " + nomeErro(erro)
-                            + " (" + (cn == null ? "predefinido" : cn.getPackageName()) + ", "
-                            + (micPhones ? "mic phones" : "mic telemóvel") + ", " + lingua + ")";
-                    // se chegou a ouvir voz mas não percebeu, não vale a pena insistir com outro motor
-                    if (ouviuAlgo[0] && erro == SpeechRecognizer.ERROR_NO_MATCH) {
-                        desligarMicBluetooth();
-                        falar("Não percebi. Tente outra vez.", VozService.this::terminar);
+                    ultimoErro = erro + " " + nomeErro(erro) + " (" + combo.descricao()
+                            + (micPhones ? ", mic phones" : ", mic telemóvel") + ")";
+                    if (erro == SpeechRecognizer.ERROR_AUDIO && micPhones) {
+                        micPhones = false;           // tenta o mesmo motor com o mic do telemóvel
+                        tentar();
                         return;
                     }
-                    tentativa++;
-                    tentar();
+                    if (erro == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                        falhar("Não ouvi nada. Tente outra vez.");
+                        return;
+                    }
+                    idx++; tentadas++;
+                    if (erro == SpeechRecognizer.ERROR_NO_MATCH) {
+                        // ouviu mas não percebeu: pede para repetir com o motor seguinte
+                        repeticoes++;
+                        if (repeticoes > 3) { falhar("Não consegui perceber. Tente outra vez."); return; }
+                        desligarMicBluetooth();
+                        falar("Repita o nome, por favor.", () -> main.postDelayed(VozService.this::tentar, 150));
+                        return;
+                    }
+                    tentar();                         // erro técnico: muda de motor sem incomodar
                 }
 
                 @Override
                 public void onResults(Bundle b) {
                     desligarMicBluetooth();
                     ArrayList<String> r = b.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
-                    tratarResultado(r == null ? new ArrayList<>() : r);
+                    if (r == null || r.isEmpty()) { onError(SpeechRecognizer.ERROR_NO_MATCH); return; }
+                    Motores.funcionou(VozService.this, meu, combo);
+                    tratarResultado(r);
                 }
             });
-            Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-            i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-            i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, lingua);
-            i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, lingua);
-            i.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5);
-            i.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, getPackageName());
-            i.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1500L);
-            i.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L);
             try {
-                reconhecedor.startListening(i);
+                reconhecedor.startListening(Motores.pedido(this, combo));
             } catch (Exception e) {
-                ultimoErro = "iniciar: " + e.getClass().getSimpleName();
-                tentativa++;
+                ultimoErro = "iniciar " + combo.descricao();
+                idx++; tentadas++;
                 tentar();
             }
         }, micPhones ? 1200 : 300);

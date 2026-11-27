@@ -237,6 +237,8 @@ public class MainActivity extends Activity {
         if (sv.isEmpty()) sb.append("nenhum");
         for (android.content.ComponentName cn : sv) sb.append("\n• ").append(cn.getPackageName());
         String ue = getSharedPreferences("claudevoz", MODE_PRIVATE).getString("ultimo_erro", "");
+        String ok = Motores.descricaoOk(this);
+        if (!ok.isEmpty()) sb.append("\nMotor que funciona: ").append(ok);
         if (!ue.isEmpty()) sb.append("\nÚltimo erro: ").append(ue);
         raiz.addView(texto(sb.toString(), 12, false));
 
@@ -296,6 +298,7 @@ public class MainActivity extends Activity {
     }
 
     private android.speech.SpeechRecognizer gravador;
+    private int comboGravar = -1;
 
     /** Ouve o utilizador dizer o nome e junta o que foi percebido aos "outros nomes". */
     private void gravarNome(EditText alt, TextView estado) {
@@ -303,12 +306,19 @@ public class MainActivity extends Activity {
             pedirPermissoes();
             return;
         }
-        java.util.List<android.content.ComponentName> sv = VozService.servicosReconhecimento(this);
+        java.util.List<Motores.Combo> cs = Motores.combos(this);
+        if (comboGravar < 0) comboGravar = Motores.inicio(this, cs.size());
+        final int meu = comboGravar % cs.size();
+        final Motores.Combo combo = cs.get(meu);
         if (gravador != null) { try { gravador.destroy(); } catch (Exception ignored) {} }
-        gravador = sv.isEmpty()
-                ? android.speech.SpeechRecognizer.createSpeechRecognizer(this)
-                : android.speech.SpeechRecognizer.createSpeechRecognizer(this, sv.get(0));
-        estado.setText("🎙️ A ouvir… diga o nome agora.");
+        try {
+            gravador = Motores.criar(this, combo);
+        } catch (Exception e) {
+            comboGravar++;
+            estado.setText("Motor indisponível (" + combo.descricao() + "). Carregue outra vez.");
+            return;
+        }
+        estado.setText("🎙️ A ouvir… diga o nome agora.  [" + (meu + 1) + "/" + cs.size() + ": " + combo.descricao() + "]");
         gravador.setRecognitionListener(new android.speech.RecognitionListener() {
             @Override public void onReadyForSpeech(Bundle b) {}
             @Override public void onBeginningOfSpeech() {}
@@ -320,19 +330,19 @@ public class MainActivity extends Activity {
 
             @Override
             public void onError(int erro) {
-                estado.setText("Não consegui ouvir (erro " + erro + "). Tente outra vez.");
+                comboGravar = meu + 1;
+                String prox = cs.get(comboGravar % cs.size()).descricao();
+                estado.setText("Erro " + erro + " com " + combo.descricao()
+                        + ". Carregue outra vez e repita — vou tentar com " + prox + ".");
                 getSharedPreferences("claudevoz", MODE_PRIVATE).edit()
-                        .putString("ultimo_erro", "gravar nome: erro " + erro
-                                + (sv.isEmpty() ? "" : " (" + sv.get(0).getPackageName() + ")")).apply();
+                        .putString("ultimo_erro", "gravar nome: erro " + erro + " (" + combo.descricao() + ")").apply();
             }
 
             @Override
             public void onResults(Bundle b) {
                 java.util.ArrayList<String> r = b.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION);
-                if (r == null || r.isEmpty()) {
-                    estado.setText("Não percebi. Tente outra vez.");
-                    return;
-                }
+                if (r == null || r.isEmpty()) { onError(7); return; }
+                Motores.funcionou(MainActivity.this, meu, combo);
                 java.util.LinkedHashSet<String> todos = new java.util.LinkedHashSet<>();
                 for (String a : alt.getText().toString().split(",")) if (!a.trim().isEmpty()) todos.add(a.trim());
                 int n = 0;
@@ -345,18 +355,15 @@ public class MainActivity extends Activity {
                     n++;
                 }
                 alt.setText(android.text.TextUtils.join(", ", todos));
-                estado.setText("✅ Ouvi: \"" + r.get(0) + "\". Pode repetir para aprender mais variações.");
+                estado.setText("✅ Ouvi: \"" + r.get(0) + "\" (" + combo.descricao()
+                        + "). Pode repetir para aprender mais variações.");
             }
         });
-        Intent i = new Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-        i.putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-        i.putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE, "pt-PT");
-        i.putExtra(android.speech.RecognizerIntent.EXTRA_MAX_RESULTS, 5);
-        i.putExtra(android.speech.RecognizerIntent.EXTRA_CALLING_PACKAGE, getPackageName());
         try {
-            gravador.startListening(i);
+            gravador.startListening(Motores.pedido(this, combo));
         } catch (Exception e) {
-            estado.setText("Falhou: " + e.getClass().getSimpleName());
+            comboGravar = meu + 1;
+            estado.setText("Falhou: " + e.getClass().getSimpleName() + ". Carregue outra vez.");
         }
     }
 
