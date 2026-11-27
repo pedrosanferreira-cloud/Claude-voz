@@ -30,6 +30,14 @@ public class ToqueService extends AccessibilityService {
     private boolean aprender = false;
     private boolean claudeEmPrimeiroPlano = false;
 
+    // estado do toque automático
+    private String nomeProjecto = "";
+    private long ultimaMudanca = 0;     // última vez que o ecrã do Claude mudou
+    private long tocouEm = 0;           // quando tocou no botão (para confirmar)
+    private long novaJanelaEm = 0;      // última vez que o Claude mudou de ecrã
+    private int tentativas = 0;
+    private final StringBuilder diario = new StringBuilder();
+
     public static ToqueService get() { return instancia; }
     public static boolean ativo() { return instancia != null; }
 
@@ -57,6 +65,10 @@ public class ToqueService extends AccessibilityService {
 
     /** Abre o projecto na app Claude e, se pedido, toca no botão de voz. */
     public void abrirProjecto(String link, boolean tocarVoz) {
+        abrirProjecto(link, "", tocarVoz);
+    }
+
+    public void abrirProjecto(String link, String nome, boolean tocarVoz) {
         Uri uri = Uri.parse(link.trim());
         Intent i = new Intent(Intent.ACTION_VIEW, uri);
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
@@ -69,23 +81,38 @@ public class ToqueService extends AccessibilityService {
             startActivity(j);
         }
         if (tocarVoz) {
+            handler.removeCallbacksAndMessages(null);
+            nomeProjecto = nome == null ? "" : nome;
             abertoEm = System.currentTimeMillis();
-            tocarAte = System.currentTimeMillis() + 15000;
+            ultimaMudanca = abertoEm;
+            tocouEm = 0;
+            tentativas = 0;
+            diario.setLength(0);
+            nota("abriu o link");
+            tocarAte = abertoEm + JANELA;
             handler.postDelayed(() -> {
                 if (tocarAte != 0) {
                     tocarAte = 0;
                     AccessibilityNodeInfo r = getRootInActiveWindow();
-                    registar("não conseguiu tocar. Ecrã: "
+                    nota("desistiu. Ecrã: "
                             + (r == null || r.getPackageName() == null ? "?" : r.getPackageName())
+                            + ". Textos: " + (r == null ? "-" : listaTextos(r))
                             + ". Botões: " + (r == null ? "-" : listaBotoes(r)));
+                    gravarDiario();
                 }
-            }, 15500);
-            // tentativas periódicas, além dos eventos de ecrã
-            for (int t = 1500; t <= 15000; t += 1000) {
+            }, JANELA + 500);
+            // verificações periódicas, além dos eventos de ecrã
+            for (int t = 500; t <= JANELA; t += 500) {
                 handler.postDelayed(this::tentarTocar, t);
             }
         }
     }
+
+    private static final long JANELA = 25000;      // tempo máximo a tentar
+    private static final long ESPERA_MIN = 3500;   // nunca tocar antes disto
+    private static final long ESTAVEL = 1200;      // ecrã parado durante isto antes de tocar
+    private static final long ESPERA_NOME = 9000;  // se não vir o nome do projecto, toca depois disto
+    private static final long CONFIRMAR = 2000;    // depois de tocar, espera isto para confirmar
 
     /** Abre a app Claude e fica à espera que o utilizador toque no botão de voz. */
     public void comecarAprender() {
@@ -216,7 +243,11 @@ public class ToqueService extends AccessibilityService {
         if (System.currentTimeMillis() < tocarAte
                 && (ev.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
                 || ev.getEventType() == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)) {
-            tentarTocar();
+            ultimaMudanca = System.currentTimeMillis();
+            if (ev.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+                novaJanelaEm = ultimaMudanca;
+                nota("ecrã mudou" + (ev.getClassName() == null ? "" : " (" + simples(ev.getClassName()) + ")"));
+            }
         }
     }
 
@@ -240,31 +271,119 @@ public class ToqueService extends AccessibilityService {
     // ---------------------------------------------------------------- tocar
 
     private void tentarTocar() {
-        if (System.currentTimeMillis() >= tocarAte) return;
-        if (System.currentTimeMillis() - abertoEm < 2000) return;   // deixar o ecrã carregar
+        long agora = System.currentTimeMillis();
+        if (agora >= tocarAte) return;
+        long passou = agora - abertoEm;
+        if (passou < ESPERA_MIN) return;                         // deixar o Claude passar ao projecto
         AccessibilityNodeInfo raiz = getRootInActiveWindow();
         if (raiz == null || raiz.getPackageName() == null
                 || !Dados.PACOTE_CLAUDE.contentEquals(raiz.getPackageName())) return;
 
         AccessibilityNodeInfo alvo = procurar(raiz);
-        if (alvo != null) {
-            if (clicar(alvo)) {
-                tocarAte = 0;
-                registar("tocou em \"" + rotulo(alvo) + "\"");
+
+        // já tocou: confirmar se o modo de voz abriu
+        if (tocouEm != 0) {
+            if (agora - tocouEm < CONFIRMAR) return;
+            if (alvo == null || novaJanelaEm > tocouEm) {       // o botão desapareceu ou abriu outro ecrã
+                nota("modo de voz aberto");
+                terminar();
                 return;
             }
+            if (tentativas >= 3) {
+                nota("o botão continua no ecrã depois de 3 toques");
+                terminar();
+                return;
+            }
+            nota("o botão continua no ecrã; vai tentar de novo");
+            tocouEm = 0;
         }
-        // último recurso: tocar na posição aprendida, depois de o ecrã estabilizar
-        long faltam = tocarAte - System.currentTimeMillis();
-        if (faltam < 9000 && Dados.botaoAprendido(this)) {
+
+        if (agora - ultimaMudanca < ESTAVEL) return;            // ecrã ainda a mexer
+        boolean veNome = temNome(raiz);
+        if (!veNome && passou < ESPERA_NOME) return;            // ainda não está no projecto
+
+        if (alvo != null) {
+            if (clicar(alvo)) {
+                tentativas++;
+                tocouEm = agora;
+                nota("tocou em \"" + rotulo(alvo) + "\" (tentativa " + tentativas
+                        + (veNome ? ", viu o projecto" : ", sem ver o nome do projecto") + ")");
+            }
+            return;
+        }
+        // último recurso: tocar na posição aprendida
+        if (passou > 12000 && tentativas == 0 && Dados.botaoAprendido(this)) {
             float xr = Dados.botaoX(this), yr = Dados.botaoY(this);
             if (xr > 0 && yr > 0) {
                 DisplayMetrics dm = getResources().getDisplayMetrics();
                 tocarEm(xr * dm.widthPixels, yr * dm.heightPixels);
-                tocarAte = 0;
-                registar("não encontrou o botão; tocou na posição guardada. Botões no ecrã: " + listaBotoes(raiz));
+                tentativas = 3;
+                tocouEm = agora;
+                nota("não encontrou o botão; tocou na posição guardada. Botões: " + listaBotoes(raiz));
             }
         }
+    }
+
+    private void terminar() {
+        tocarAte = 0;
+        gravarDiario();
+    }
+
+    /** O nome do projecto aparece no ecrã? (sinal de que já saiu do menu principal) */
+    private boolean temNome(AccessibilityNodeInfo raiz) {
+        String n = normal(nomeProjecto);
+        if (n.length() < 2) return false;
+        return contemTexto(raiz, n, 0);
+    }
+
+    private boolean contemTexto(AccessibilityNodeInfo n, String procurado, int prof) {
+        if (n == null || prof > 40) return false;
+        String t = normal((n.getText() == null ? "" : n.getText().toString()) + " "
+                + (n.getContentDescription() == null ? "" : n.getContentDescription().toString()));
+        if (n.isVisibleToUser() && t.contains(procurado)) return true;
+        for (int i = 0; i < n.getChildCount(); i++) {
+            if (contemTexto(n.getChild(i), procurado, prof + 1)) return true;
+        }
+        return false;
+    }
+
+    private static String normal(String s) {
+        if (s == null) return "";
+        String r = java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFD)
+                .replaceAll("\\p{M}", "").toLowerCase(Locale.ROOT);
+        return r.replaceAll("\\s+", " ").trim();
+    }
+
+    private String listaTextos(AccessibilityNodeInfo raiz) {
+        java.util.List<String> l = new java.util.ArrayList<>();
+        juntarTextos(raiz, l, 0);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < l.size() && i < 12; i++) sb.append(i == 0 ? "" : " | ").append(l.get(i));
+        return sb.toString();
+    }
+
+    private void juntarTextos(AccessibilityNodeInfo n, java.util.List<String> l, int prof) {
+        if (n == null || prof > 40) return;
+        if (n.getText() != null && n.isVisibleToUser()) {
+            String t = n.getText().toString().trim();
+            if (!t.isEmpty()) l.add(t.length() > 30 ? t.substring(0, 30) + "…" : t);
+        }
+        for (int i = 0; i < n.getChildCount(); i++) juntarTextos(n.getChild(i), l, prof + 1);
+    }
+
+    private static String simples(CharSequence c) {
+        String s = c.toString();
+        int p = s.lastIndexOf('.');
+        return p >= 0 ? s.substring(p + 1) : s;
+    }
+
+    private void nota(String t) {
+        long s = abertoEm == 0 ? 0 : (System.currentTimeMillis() - abertoEm) / 100;
+        diario.append(diario.length() == 0 ? "" : "\n").append(s / 10).append(',').append(s % 10).append("s: ").append(t);
+    }
+
+    private void gravarDiario() {
+        registar(diario.toString());
     }
 
     private String rotulo(AccessibilityNodeInfo n) {

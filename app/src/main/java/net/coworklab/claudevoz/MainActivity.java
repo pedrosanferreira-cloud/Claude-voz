@@ -206,7 +206,7 @@ public class MainActivity extends Activity {
             VozService.ensinarGesto(this);
             new AlertDialog.Builder(this)
                     .setTitle("Ensinar gesto")
-                    .setMessage("Com os phones ligados e sem música a tocar, faça agora o gesto que escolheu (ex.: 3 toques no auricular esquerdo). Vai ouvir \"Gesto guardado\".")
+                    .setMessage("Com os phones ligados e sem música a tocar, faça agora o gesto que escolheu (ex.: 3 toques num auricular). Vai ouvir \"Gesto guardado\".")
                     .setPositiveButton("Feito", (d, w) -> desenhar())
                     .show();
         });
@@ -239,7 +239,7 @@ public class MainActivity extends Activity {
         for (android.content.ComponentName cn : sv) sb.append("\n• ").append(cn.getPackageName());
         String ue = getSharedPreferences("claudevoz", MODE_PRIVATE).getString("ultimo_erro", "");
         String ut = getSharedPreferences("claudevoz", MODE_PRIVATE).getString("ultimo_toque", "");
-        if (!ut.isEmpty()) sb.append("\nÚltimo toque automático: ").append(ut);
+        if (!ut.isEmpty()) sb.append("\nÚltimo toque automático:\n").append(ut);
         String uv = getSharedPreferences("claudevoz", MODE_PRIVATE).getString("ultima_voz", "");
         if (!uv.isEmpty()) sb.append("\nÚltima voz: ").append(uv);
         String ok = Motores.descricaoOk(this);

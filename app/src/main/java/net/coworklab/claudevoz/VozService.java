@@ -522,7 +522,7 @@ public class VozService extends Service {
         desarmar(); // larga o botão dos phones para a app Claude
         ToqueService t = ToqueService.get();
         if (t != null) {
-            t.abrirProjecto(p.link, Dados.ativarVozAuto(this));
+            t.abrirProjecto(p.link, p.nome, Dados.ativarVozAuto(this));
         } else {
             // sem acessibilidade: tenta abrir directamente (pode ser bloqueado pelo Android)
             try {
