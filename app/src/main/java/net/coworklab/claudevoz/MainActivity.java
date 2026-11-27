@@ -309,8 +309,10 @@ public class MainActivity extends Activity {
                 new AlertDialog.Builder(this)
                         .setTitle("Ensinar tarefa")
                         .setMessage("A app vai abrir o projecto e aparece uma barra vermelha \"A gravar\".\n\n"
-                                + "1. Espere que o projecto abra.\n2. Toque nos botões que quer (ex.: modo de voz).\n"
-                                + "3. Carregue em \"Terminar\" na barra vermelha.\n\n"
+                                + "1. Espere que o projecto abra.\n"
+                                + "2. Na barra vermelha, carregue em \"Escolher botão\" e escolha o botão (ex.: ⭐ modo de voz). A app toca nele por si.\n"
+                                + "3. Repita o passo 2 para cada botão da tarefa.\n"
+                                + "4. Carregue em \"Terminar\".\n\n"
                                 + "Se o último toque abrir um ecrã que tapa a barra, volte atrás e carregue em Terminar.")
                         .setPositiveButton("Começar", (x, y) -> t.comecarGravar(atual))
                         .setNegativeButton("Cancelar", null)

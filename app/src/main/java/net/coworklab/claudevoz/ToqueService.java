@@ -308,7 +308,156 @@ public class ToqueService extends AccessibilityService {
     private View barra;
     private TextView barraTexto;
 
+    private int cliquesVistos = 0;
+    private View painel;
+
     public boolean aGravar() { return gravando; }
+
+    /** Clique sem nó de origem: guarda o que o evento diz (texto/descrição). */
+    private void gravarDeEvento(AccessibilityEvent ev, String pkg) {
+        String d = ev.getContentDescription() == null ? "" : ev.getContentDescription().toString().trim();
+        String t = ev.getText() == null || ev.getText().isEmpty() || ev.getText().get(0) == null
+                ? "" : ev.getText().get(0).toString().trim();
+        if (d.isEmpty() && t.isEmpty()) return;
+        Rotinas.Passo p = new Rotinas.Passo();
+        p.pacote = pkg; p.desc = d; p.texto = t.length() > 60 ? "" : t;
+        p.rotulo = !d.isEmpty() ? d : t;
+        juntarContexto(p);
+        gravados.add(p);
+        mostrarContagem(p.rotulo);
+    }
+
+    private void juntarContexto(Rotinas.Passo p) {
+        String meu = normal(p.rotulo);
+        for (String t : ultimoEcra) {
+            if (p.contexto.size() >= 10) break;
+            if (!t.equals(meu) && t.length() >= 2) p.contexto.add(t);
+        }
+    }
+
+    private void mostrarContagem(String ultimo) {
+        if (barraTexto == null) return;
+        int q = gravados.size() - 1;
+        barraTexto.setText("● " + q + (q == 1 ? " passo: " : " passos: ") + ultimo);
+    }
+
+    /** Mostra a lista dos botões do ecrã actual; o escolhido é tocado e guardado como passo. */
+    private void mostrarEscolha() {
+        tirarPainel();
+        AccessibilityNodeInfo raiz = raizDe("");
+        if (raiz == null || raiz.getPackageName() == null
+                || getPackageName().contentEquals(raiz.getPackageName())) {
+            Toast.makeText(this, "Não consigo ler este ecrã. Espere que a app abra.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        final String pkg = raiz.getPackageName().toString();
+        final List<String> ecra = textosDoEcra(raiz);
+        List<AccessibilityNodeInfo> nos = new ArrayList<>();
+        descreverEcra(raiz, nos);
+        List<AccessibilityNodeInfo> lista = new ArrayList<>();
+        for (AccessibilityNodeInfo n : nos) if (!rotulo(n).isEmpty()) lista.add(n);
+        DisplayMetrics dm = getResources().getDisplayMetrics();
+        lista.sort((a, b) -> {
+            boolean va = pareceVoz(a), vb = pareceVoz(b);
+            if (va != vb) return va ? -1 : 1;
+            Rect ra = new Rect(), rb = new Rect();
+            a.getBoundsInScreen(ra); b.getBoundsInScreen(rb);
+            return Integer.compare(rb.centerY(), ra.centerY());   // de baixo para cima
+        });
+        if (lista.isEmpty()) {
+            Toast.makeText(this, "Não encontrei botões neste ecrã.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        try {
+            WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+            float den = dm.density;
+            LinearLayout caixa = new LinearLayout(this);
+            caixa.setOrientation(LinearLayout.VERTICAL);
+            caixa.setBackgroundColor(Color.argb(245, 30, 30, 30));
+            caixa.setPadding((int) (10 * den), (int) (10 * den), (int) (10 * den), (int) (10 * den));
+            TextView tit = new TextView(this);
+            tit.setText("Em que botão quer tocar? (⭐ = parece o modo de voz)");
+            tit.setTextColor(Color.WHITE);
+            tit.setTextSize(16);
+            caixa.addView(tit);
+            android.widget.ScrollView sv = new android.widget.ScrollView(this);
+            LinearLayout itens = new LinearLayout(this);
+            itens.setOrientation(LinearLayout.VERTICAL);
+            for (AccessibilityNodeInfo n : lista) {
+                Rect r = new Rect();
+                n.getBoundsInScreen(r);
+                String zona = (r.exactCenterY() > dm.heightPixels * 0.66f ? "em baixo" :
+                        r.exactCenterY() < dm.heightPixels * 0.33f ? "em cima" : "ao meio")
+                        + (r.exactCenterX() > dm.widthPixels * 0.66f ? ", à direita" :
+                        r.exactCenterX() < dm.widthPixels * 0.33f ? ", à esquerda" : ", ao centro");
+                Button b = new Button(this);
+                b.setAllCaps(false);
+                b.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+                b.setText((pareceVoz(n) ? "⭐ " : "") + rotulo(n) + "   — " + zona);
+                b.setOnClickListener(v -> escolhido(n, pkg, ecra));
+                itens.addView(b);
+            }
+            sv.addView(itens);
+            caixa.addView(sv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                    (int) (dm.heightPixels * 0.5f)));
+            Button canc = new Button(this);
+            canc.setText("Cancelar");
+            canc.setAllCaps(false);
+            canc.setOnClickListener(v -> tirarPainel());
+            caixa.addView(canc);
+            WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT);
+            lp.gravity = Gravity.TOP;
+            lp.y = (int) (40 * den);
+            wm.addView(caixa, lp);
+            painel = caixa;
+        } catch (Exception e) {
+            Toast.makeText(this, "Não consegui mostrar a lista.", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void escolhido(AccessibilityNodeInfo n, String pkg, List<String> ecra) {
+        tirarPainel();
+        ultimoEcra = ecra;
+        int antes = gravados.size();
+        n.refresh();
+        gravarToque(n, pkg);
+        if (gravados.size() > antes) {
+            // a app toca por si, para a tarefa continuar
+            handler.postDelayed(() -> {
+                int ignorar = cliquesVistos;
+                clicar(n);
+                // o clique feito pela app pode gerar um evento: não o gravar duas vezes
+                handler.postDelayed(() -> { if (cliquesVistos > ignorar) removerDuplicado(); }, 700);
+            }, 300);
+        }
+    }
+
+    private void removerDuplicado() {
+        int k = gravados.size();
+        if (k >= 3) {
+            Rotinas.Passo a = gravados.get(k - 2), b = gravados.get(k - 1);
+            if (a.rotulo.equals(b.rotulo) && a.pacote.equals(b.pacote)) {
+                gravados.remove(k - 1);
+                mostrarContagem(a.rotulo);
+            }
+        }
+    }
+
+    private boolean pareceVoz(AccessibilityNodeInfo n) {
+        String d = normal(rotulo(n) + " " + (n.getViewIdResourceName() == null ? "" : n.getViewIdResourceName()));
+        return d.contains("voice") || d.contains("voz") || d.contains("audio") || d.contains("speak")
+                || d.contains("falar") || d.contains("dictat") || d.contains("microphone") || d.contains("microfone");
+    }
+
+    private void tirarPainel() {
+        if (painel != null) {
+            try { ((WindowManager) getSystemService(WINDOW_SERVICE)).removeView(painel); } catch (Exception ignored) {}
+            painel = null;
+        }
+    }
 
     /** Abre a tarefa e grava os toques do utilizador até carregar em "Terminar". */
     public void comecarGravar(Dados.Projecto pr) {
@@ -316,6 +465,7 @@ public class ToqueService extends AccessibilityService {
         gravando = true;
         gravarTarefa = pr;
         gravados.clear();
+        cliquesVistos = 0;
         gravados.add(Rotinas.abrir(pr.link));
         mostrarBarra();
         abrirLink(pr.link);
@@ -331,7 +481,7 @@ public class ToqueService extends AccessibilityService {
             Rotinas.guardar(this, gravarTarefa.link, new ArrayList<>(gravados));
             msg = "Tarefa \"" + gravarTarefa.nome + "\" ensinada: " + n + (n == 1 ? " toque." : " toques.");
         } else if (guardar) {
-            msg = "Não gravei nenhum toque. Nada mudou.";
+            msg = "Não gravei nenhum passo. Da próxima vez, use \"Escolher botão\" na barra vermelha.";
         } else {
             msg = "Ensino cancelado.";
         }
@@ -354,16 +504,9 @@ public class ToqueService extends AccessibilityService {
         DisplayMetrics dm = getResources().getDisplayMetrics();
         p.x = r.exactCenterX() / dm.widthPixels;
         p.y = r.exactCenterY() / dm.heightPixels;
-        String meu = normal(p.rotulo);
-        for (String t : ultimoEcra) {
-            if (p.contexto.size() >= 10) break;
-            if (!t.equals(meu) && t.length() >= 2) p.contexto.add(t);
-        }
+        juntarContexto(p);
         gravados.add(p);
-        if (barraTexto != null) {
-            int q = gravados.size() - 1;
-            barraTexto.setText("● A gravar — " + q + (q == 1 ? " toque" : " toques") + ": " + p.rotulo);
-        }
+        mostrarContagem(p.rotulo);
     }
 
     private void mostrarBarra() {
@@ -378,9 +521,14 @@ public class ToqueService extends AccessibilityService {
             l.setPadding(pd, pd / 2, pd, pd / 2);
             barraTexto = new TextView(this);
             barraTexto.setTextColor(Color.WHITE);
-            barraTexto.setText("● A gravar — faça a tarefa");
+            barraTexto.setText("● A gravar");
             barraTexto.setSingleLine(true);
             l.addView(barraTexto, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+            Button esc = new Button(this);
+            esc.setText("Escolher botão");
+            esc.setAllCaps(false);
+            esc.setOnClickListener(v -> mostrarEscolha());
+            l.addView(esc);
             Button fim = new Button(this);
             fim.setText("Terminar");
             fim.setAllCaps(false);
@@ -399,12 +547,14 @@ public class ToqueService extends AccessibilityService {
             lp.y = (int) (90 * getResources().getDisplayMetrics().density);
             wm.addView(l, lp);
             barra = l;
+            barraTexto.setOnClickListener(v -> mostrarEscolha());
         } catch (Exception e) {
             Toast.makeText(this, "Não consegui mostrar a barra de gravação.", Toast.LENGTH_LONG).show();
         }
     }
 
     private void tirarBarra() {
+        tirarPainel();
         if (barra != null) {
             try { ((WindowManager) getSystemService(WINDOW_SERVICE)).removeView(barra); } catch (Exception ignored) {}
             barra = null;
@@ -433,8 +583,10 @@ public class ToqueService extends AccessibilityService {
 
         if (gravando) {
             if (tipo == AccessibilityEvent.TYPE_VIEW_CLICKED) {
+                cliquesVistos++;
                 AccessibilityNodeInfo n = ev.getSource();
                 if (n != null) gravarToque(n, pkg);
+                else gravarDeEvento(ev, pkg);
             } else {
                 long agora = System.currentTimeMillis();
                 if (agora - ultimoEcraEm > 250) {
