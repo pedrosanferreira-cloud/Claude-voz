@@ -262,6 +262,11 @@ public class MainActivity extends Activity {
         f.addView(nome);
         f.addView(link);
         f.addView(alt);
+        Button gravar = botao("🎤 Gravar como digo o nome");
+        TextView estadoGravacao = texto("Carregue e diga o nome do projecto. Repita 2 ou 3 vezes.", 12, false);
+        gravar.setOnClickListener(v -> gravarNome(alt, estadoGravacao));
+        f.addView(gravar);
+        f.addView(estadoGravacao);
 
         AlertDialog.Builder d = new AlertDialog.Builder(this)
                 .setTitle(atual == null ? "Novo projecto" : "Editar projecto")
@@ -288,6 +293,71 @@ public class MainActivity extends Activity {
             });
         }
         d.show();
+    }
+
+    private android.speech.SpeechRecognizer gravador;
+
+    /** Ouve o utilizador dizer o nome e junta o que foi percebido aos "outros nomes". */
+    private void gravarNome(EditText alt, TextView estado) {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            pedirPermissoes();
+            return;
+        }
+        java.util.List<android.content.ComponentName> sv = VozService.servicosReconhecimento(this);
+        if (gravador != null) { try { gravador.destroy(); } catch (Exception ignored) {} }
+        gravador = sv.isEmpty()
+                ? android.speech.SpeechRecognizer.createSpeechRecognizer(this)
+                : android.speech.SpeechRecognizer.createSpeechRecognizer(this, sv.get(0));
+        estado.setText("🎙️ A ouvir… diga o nome agora.");
+        gravador.setRecognitionListener(new android.speech.RecognitionListener() {
+            @Override public void onReadyForSpeech(Bundle b) {}
+            @Override public void onBeginningOfSpeech() {}
+            @Override public void onRmsChanged(float v) {}
+            @Override public void onBufferReceived(byte[] b) {}
+            @Override public void onEndOfSpeech() { estado.setText("A processar…"); }
+            @Override public void onPartialResults(Bundle b) {}
+            @Override public void onEvent(int t, Bundle b) {}
+
+            @Override
+            public void onError(int erro) {
+                estado.setText("Não consegui ouvir (erro " + erro + "). Tente outra vez.");
+                getSharedPreferences("claudevoz", MODE_PRIVATE).edit()
+                        .putString("ultimo_erro", "gravar nome: erro " + erro
+                                + (sv.isEmpty() ? "" : " (" + sv.get(0).getPackageName() + ")")).apply();
+            }
+
+            @Override
+            public void onResults(Bundle b) {
+                java.util.ArrayList<String> r = b.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION);
+                if (r == null || r.isEmpty()) {
+                    estado.setText("Não percebi. Tente outra vez.");
+                    return;
+                }
+                java.util.LinkedHashSet<String> todos = new java.util.LinkedHashSet<>();
+                for (String a : alt.getText().toString().split(",")) if (!a.trim().isEmpty()) todos.add(a.trim());
+                int n = 0;
+                for (String h : r) {
+                    if (n >= 3) break;
+                    String hh = h.trim();
+                    boolean existe = false;
+                    for (String t : todos) if (t.equalsIgnoreCase(hh)) existe = true;
+                    if (!hh.isEmpty() && !existe) todos.add(hh);
+                    n++;
+                }
+                alt.setText(android.text.TextUtils.join(", ", todos));
+                estado.setText("✅ Ouvi: \"" + r.get(0) + "\". Pode repetir para aprender mais variações.");
+            }
+        });
+        Intent i = new Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        i.putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        i.putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE, "pt-PT");
+        i.putExtra(android.speech.RecognizerIntent.EXTRA_MAX_RESULTS, 5);
+        i.putExtra(android.speech.RecognizerIntent.EXTRA_CALLING_PACKAGE, getPackageName());
+        try {
+            gravador.startListening(i);
+        } catch (Exception e) {
+            estado.setText("Falhou: " + e.getClass().getSimpleName());
+        }
     }
 
     private String linkDaAreaTransferencia() {
