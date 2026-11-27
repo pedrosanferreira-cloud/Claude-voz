@@ -80,6 +80,26 @@ public final class Dados {
     public static float botaoX(Context c) { return prefs(c).getFloat("btn_x", -1f); }
     public static float botaoY(Context c) { return prefs(c).getFloat("btn_y", -1f); }
 
+    public static int teclaGatilho(Context c) {
+        return prefs(c).getInt("tecla", android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS);
+    }
+    public static void setTeclaGatilho(Context c, int k) { prefs(c).edit().putInt("tecla", k).apply(); }
+
+    public static String nomeTecla(int k) {
+        switch (k) {
+            case android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS: return "faixa anterior";
+            case android.view.KeyEvent.KEYCODE_MEDIA_NEXT: return "faixa seguinte";
+            case android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+            case android.view.KeyEvent.KEYCODE_HEADSETHOOK: return "play/pausa";
+            case android.view.KeyEvent.KEYCODE_MEDIA_PLAY: return "play";
+            case android.view.KeyEvent.KEYCODE_MEDIA_PAUSE: return "pausa";
+            case android.view.KeyEvent.KEYCODE_MEDIA_REWIND: return "recuar";
+            case android.view.KeyEvent.KEYCODE_MEDIA_FAST_FORWARD: return "avançar";
+            case android.view.KeyEvent.KEYCODE_MEDIA_STOP: return "parar";
+            default: return "sinal " + k;
+        }
+    }
+
     public static boolean ativarVozAuto(Context c) { return prefs(c).getBoolean("auto_voz", true); }
     public static void setAtivarVozAuto(Context c, boolean v) { prefs(c).edit().putBoolean("auto_voz", v).apply(); }
 

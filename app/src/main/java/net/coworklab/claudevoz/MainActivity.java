@@ -155,7 +155,7 @@ public class MainActivity extends Activity {
 
         TextView titulo = texto("Claude Voz", 26, true);
         raiz.addView(titulo);
-        raiz.addView(texto("Carregue no play/pausa dos phones, diga o nome do projecto e a app abre-o no Claude com o modo de voz ligado.", 14, false));
+        raiz.addView(texto("Faça o gesto escolhido nos phones, diga o nome do projecto e a app abre-o no Claude com o modo de voz ligado. Os outros gestos continuam a controlar a música.", 14, false));
 
         seccao("1. Configuração");
 
@@ -197,6 +197,19 @@ public class MainActivity extends Activity {
                     }
                     raiz.postDelayed(this::desenhar, 600);
                 });
+        int tecla = Dados.teclaGatilho(this);
+        linhaEstado("Gesto dos phones: " + Dados.nomeTecla(tecla), true, "Ensinar gesto", v -> {
+            if (!VozService.aCorrer()) {
+                Toast.makeText(this, "Toque primeiro em Ligar.", Toast.LENGTH_LONG).show();
+                return;
+            }
+            VozService.ensinarGesto(this);
+            new AlertDialog.Builder(this)
+                    .setTitle("Ensinar gesto")
+                    .setMessage("Com os phones ligados e sem música a tocar, faça agora o gesto que escolheu (ex.: 3 toques no auricular esquerdo). Vai ouvir \"Gesto guardado\".")
+                    .setPositiveButton("Feito", (d, w) -> desenhar())
+                    .show();
+        });
         Button testar = botao("Testar agora (ouvir)");
         testar.setOnClickListener(v -> VozService.enviar(this, VozService.ACAO_OUVIR));
         raiz.addView(testar);

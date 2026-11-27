@@ -42,6 +42,7 @@ public class VozService extends Service {
     public static final String ACAO_OUVIR = "ouvir";
     public static final String ACAO_REARMAR = "rearmar";
     public static final String ACAO_PARAR = "parar";
+    public static final String ACAO_GESTO = "gesto";
 
     private static final String CANAL = "claudevoz";
     private static final int NOTIF_ID = 7;
@@ -59,6 +60,15 @@ public class VozService extends Service {
     private Thread threadSilencio;
     private boolean ocupado = false;
     private boolean emPrimeiroPlano = false;
+    private boolean armado = false;
+    private int silencioSeguido = 0;
+    public static volatile boolean aprenderGesto = false;
+
+    /** Começa a esperar o gesto dos phones para o aprender. */
+    public static void ensinarGesto(Context c) {
+        aprenderGesto = true;
+        enviar(c, ACAO_GESTO);
+    }
 
     public static boolean aCorrer() { return aCorrer; }
 
@@ -101,26 +111,30 @@ public class VozService extends Service {
             }
         });
 
+        main.postDelayed(vigia, 3000);
         sessao = new MediaSession(this, "ClaudeVoz");
         sessao.setCallback(new MediaSession.Callback() {
             @Override
             public boolean onMediaButtonEvent(Intent intent) {
                 KeyEvent ev = intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT);
-                if (ev != null && ev.getAction() == KeyEvent.ACTION_DOWN && ev.getRepeatCount() == 0) {
-                    switch (ev.getKeyCode()) {
-                        case KeyEvent.KEYCODE_HEADSETHOOK:
-                        case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
-                        case KeyEvent.KEYCODE_MEDIA_PLAY:
-                        case KeyEvent.KEYCODE_MEDIA_PAUSE:
-                            ouvir();
-                            return true;
-                    }
+                if (ev == null) return true;
+                if (ev.getAction() != KeyEvent.ACTION_DOWN || ev.getRepeatCount() != 0) return true;
+                int k = ev.getKeyCode();
+                if (aprenderGesto) {
+                    aprenderGesto = false;
+                    Dados.setTeclaGatilho(VozService.this, k);
+                    falar("Gesto guardado. A Claude Voz vai reagir a " + Dados.nomeTecla(k) + ".", null);
+                    return true;
                 }
-                return true; // ignora os restantes botões enquanto estamos activos
+                if (k == Dados.teclaGatilho(VozService.this)) {
+                    ouvir();
+                } else {
+                    passarAdiante(k);
+                }
+                return true;
             }
 
-            @Override public void onPlay() { ouvir(); }
-            @Override public void onPause() { ouvir(); }
+
         });
     }
 
@@ -137,6 +151,10 @@ public class VozService extends Service {
             case ACAO_PARAR:
                 stopSelf();
                 break;
+            case ACAO_GESTO:
+                armar();
+                falar("Faça agora o gesto nos phones.", null);
+                break;
             case ACAO_REARMAR:
             case ACAO_LIGAR:
             default:
@@ -149,6 +167,7 @@ public class VozService extends Service {
     @Override
     public void onDestroy() {
         aCorrer = false;
+        main.removeCallbacks(vigia);
         pararSilencio();
         if (sessao != null) { sessao.setActive(false); sessao.release(); }
         if (reconhecedor != null) reconhecedor.destroy();
@@ -179,7 +198,7 @@ public class VozService extends Service {
                 ? new Notification.Builder(this, CANAL) : new Notification.Builder(this);
         Notification n = b.setSmallIcon(android.R.drawable.ic_btn_speak_now)
                 .setContentTitle("Claude Voz activa")
-                .setContentText("Carregue no play/pausa dos phones e diga o projecto")
+                .setContentText("Faça o gesto dos phones e diga o projecto")
                 .setContentIntent(abrir)
                 .setOngoing(true)
                 .addAction(new Notification.Action.Builder(null, "Ouvir agora", ouvir).build())
@@ -218,6 +237,7 @@ public class VozService extends Service {
                 .build());
         sessao.setActive(true);
         comecarSilencio();
+        armado = true;
     }
 
     private void desarmar() {
@@ -225,7 +245,47 @@ public class VozService extends Service {
         sessao.setPlaybackState(new PlaybackState.Builder()
                 .setState(PlaybackState.STATE_PAUSED, 0, 0f).build());
         sessao.setActive(false);
+        armado = false;
     }
+
+    /**
+     * Um gesto que não é o da Claude Voz: larga o controlo e entrega-o
+     * à app de música, como se a Claude Voz não existisse.
+     */
+    private void passarAdiante(int k) {
+        desarmar();
+        silencioSeguido = 0;
+        main.postDelayed(() -> {
+            long t = android.os.SystemClock.uptimeMillis();
+            audio.dispatchMediaKeyEvent(new KeyEvent(t, t, KeyEvent.ACTION_DOWN, k, 0));
+            audio.dispatchMediaKeyEvent(new KeyEvent(t, t, KeyEvent.ACTION_UP, k, 0));
+        }, 250);
+    }
+
+    /**
+     * De 3 em 3 segundos: se outra app está a tocar (música, chamada, modo de voz do Claude)
+     * a Claude Voz fica de lado; quando tudo está calado há algum tempo, volta a ficar à escuta.
+     */
+    private final Runnable vigia = new Runnable() {
+        @Override public void run() {
+            try {
+                if (!ocupado && !aprenderGesto) {
+                    int ativos = audio.getActivePlaybackConfigurations().size();
+                    int outros = armado ? ativos - 1 : ativos;
+                    if (outros > 0) {
+                        silencioSeguido = 0;
+                        if (armado) desarmar();
+                    } else {
+                        silencioSeguido++;
+                        ToqueService t = ToqueService.get();
+                        boolean claudeAberto = t != null && t.claudeVisivel();
+                        if (!armado && silencioSeguido >= 2 && !claudeAberto) armar();
+                    }
+                }
+            } catch (Exception ignored) {}
+            main.postDelayed(this, 3000);
+        }
+    };
 
     private void comecarSilencio() {
         if (silencioAtivo) return;
