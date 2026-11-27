@@ -43,6 +43,7 @@ public class VozService extends Service {
     public static final String ACAO_REARMAR = "rearmar";
     public static final String ACAO_PARAR = "parar";
     public static final String ACAO_GESTO = "gesto";
+    public static final String ACAO_DIZER = "dizer";
 
     private static final String CANAL = "claudevoz";
     private static final int NOTIF_ID = 7;
@@ -74,6 +75,15 @@ public class VozService extends Service {
 
     public static void enviar(Context c, String acao) {
         Intent i = new Intent(c, VozService.class).setAction(acao);
+        try {
+            if (Build.VERSION.SDK_INT >= 26) c.startForegroundService(i);
+            else c.startService(i);
+        } catch (Exception ignored) {}
+    }
+
+    /** Diz uma frase em voz alta (ex.: avisos do motor de tarefas). */
+    public static void dizer(Context c, String texto) {
+        Intent i = new Intent(c, VozService.class).setAction(ACAO_DIZER).putExtra("texto", texto);
         try {
             if (Build.VERSION.SDK_INT >= 26) c.startForegroundService(i);
             else c.startService(i);
@@ -154,6 +164,10 @@ public class VozService extends Service {
             case ACAO_GESTO:
                 armar();
                 falar("Faça agora o gesto nos phones.", null);
+                break;
+            case ACAO_DIZER:
+                String txt = intent.getStringExtra("texto");
+                if (txt != null && !txt.isEmpty()) falar(txt, null);
                 break;
             case ACAO_REARMAR:
             case ACAO_LIGAR:
@@ -522,7 +536,7 @@ public class VozService extends Service {
         desarmar(); // larga o botão dos phones para a app Claude
         ToqueService t = ToqueService.get();
         if (t != null) {
-            t.abrirProjecto(p.link, p.nome, Dados.ativarVozAuto(this));
+            t.executar(p, Dados.ativarVozAuto(this));
         } else {
             // sem acessibilidade: tenta abrir directamente (pode ser bloqueado pelo Android)
             try {

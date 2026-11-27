@@ -57,11 +57,6 @@ public class MainActivity extends Activity {
             jaProcurou = true;
             procurarActualizacao(false);
         }
-        java.util.List<ToqueService.Candidato> c = ToqueService.candidatos;
-        if (c != null && !c.isEmpty() && getIntent().getBooleanExtra("escolher", false)) {
-            getIntent().removeExtra("escolher");
-            escolherBotao(c);
-        }
     }
 
     @Override
@@ -112,25 +107,6 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void escolherBotao(java.util.List<ToqueService.Candidato> lista) {
-        String[] nomes = new String[lista.size()];
-        for (int i = 0; i < lista.size(); i++) {
-            ToqueService.Candidato c = lista.get(i);
-            nomes[i] = (c.pareceVoz() ? "⭐ " : "") + c.rotulo();
-        }
-        new AlertDialog.Builder(this)
-                .setTitle("Qual é o botão do modo de voz (onda sonora)?")
-                .setItems(nomes, (d, w) -> {
-                    ToqueService.Candidato c = lista.get(w);
-                    Dados.guardarBotao(this, c.id, c.desc, c.texto, c.x, c.y);
-                    ToqueService.candidatos = null;
-                    Toast.makeText(this, "Aprendido: " + c.rotulo(), Toast.LENGTH_LONG).show();
-                    desenhar();
-                })
-                .setNegativeButton("Cancelar", (d, w) -> ToqueService.candidatos = null)
-                .show();
-    }
-
     private void pedirPermissoes() {
         List<String> pedir = new ArrayList<>();
         pedir.add(Manifest.permission.RECORD_AUDIO);
@@ -169,19 +145,19 @@ public class MainActivity extends Activity {
                     startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
                 });
 
-        boolean aprendido = Dados.botaoAprendido(this);
-        linhaEstado("Botão do modo de voz aprendido", aprendido,
-                aprendido ? "Ensinar de novo" : "Ensinar", v -> {
-                    ToqueService t = ToqueService.get();
-                    if (t == null) {
-                        Toast.makeText(this, "Active primeiro a acessibilidade.", Toast.LENGTH_LONG).show();
-                    } else {
-                        t.comecarAprender();
-                    }
-                });
+        boolean temChave = !Cerebro.chave(this).isEmpty();
+        linhaEstado("Plano B: cérebro com IA (quando um passo falha)", Cerebro.ligado(this),
+                temChave ? "Alterar chave" : "Pôr chave", v -> definirChave());
+        if (temChave) {
+            CheckBox ia = new CheckBox(this);
+            ia.setText("Usar a IA quando uma tarefa ensinada falhar");
+            ia.setChecked(Cerebro.ligado(this));
+            ia.setOnCheckedChangeListener((c, v) -> { Cerebro.setLigado(this, v); });
+            raiz.addView(ia);
+        }
 
         CheckBox auto = new CheckBox(this);
-        auto.setText("Ligar o modo de voz automaticamente ao abrir o projecto");
+        auto.setText("Nas tarefas ainda não ensinadas: ligar o modo de voz ao abrir o projecto");
         auto.setChecked(Dados.ativarVozAuto(this));
         auto.setOnCheckedChangeListener((c, v) -> Dados.setAtivarVozAuto(this, v));
         raiz.addView(auto);
@@ -215,14 +191,16 @@ public class MainActivity extends Activity {
         raiz.addView(testar);
 
         seccao("3. Projectos");
-        raiz.addView(texto("Para cada projecto: copie o link (claude.ai/project/...), adicione-o aqui e grave a sua voz a dizer o nome 3 vezes, com os phones ligados.", 13, false));
+        raiz.addView(texto("Para cada projecto: copie o link (claude.ai/project/...), adicione-o aqui e grave a sua voz a dizer o nome 3 vezes, com os phones ligados. Depois toque nele e em \"Ensinar tarefa\": a app abre o projecto, faz os toques que quer (ex.: botão do modo de voz) e carrega em Terminar.", 13, false));
 
         List<Dados.Projecto> lista = Dados.lerProjectos(this);
         for (int i = 0; i < lista.size(); i++) {
             final int idx = i;
             Dados.Projecto pr = lista.get(i);
             int nv = Voz.quantos(this, pr.link);
-            Button item = botao(pr.nome + "   " + (nv >= 3 ? "🎤✅" : "🎤 " + nv + "/3"));
+            int np = Rotinas.quantos(this, pr.link);
+            Button item = botao(pr.nome + "   " + (nv >= 3 ? "🎤✅" : "🎤 " + nv + "/3")
+                    + "   " + (np > 0 ? "🎓 " + np + (np == 1 ? " toque" : " toques") : "🎓 por ensinar"));
             item.setAllCaps(false);
             item.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
             item.setOnClickListener(v -> editar(idx));
@@ -318,9 +296,48 @@ public class MainActivity extends Activity {
         f.addView(estadoGravacao);
         f.addView(apagarVoz);
 
+        final AlertDialog[] janela = new AlertDialog[1];
+        if (atual != null) {
+            int np = Rotinas.quantos(this, atual.link);
+            f.addView(texto(np > 0 ? "🎓 Tarefa ensinada: " + passosTexto(atual.link)
+                    : "🎓 Tarefa ainda não ensinada (faz o habitual: abre e liga o modo de voz).", 13, false));
+            Button ensinar = botao(np > 0 ? "🎓 Ensinar tarefa de novo" : "🎓 Ensinar tarefa");
+            ensinar.setOnClickListener(v -> {
+                ToqueService t = ToqueService.get();
+                if (t == null) { Toast.makeText(this, "Active primeiro a acessibilidade.", Toast.LENGTH_LONG).show(); return; }
+                if (janela[0] != null) janela[0].dismiss();
+                new AlertDialog.Builder(this)
+                        .setTitle("Ensinar tarefa")
+                        .setMessage("A app vai abrir o projecto e aparece uma barra vermelha \"A gravar\".\n\n"
+                                + "1. Espere que o projecto abra.\n2. Toque nos botões que quer (ex.: modo de voz).\n"
+                                + "3. Carregue em \"Terminar\" na barra vermelha.\n\n"
+                                + "Se o último toque abrir um ecrã que tapa a barra, volte atrás e carregue em Terminar.")
+                        .setPositiveButton("Começar", (x, y) -> t.comecarGravar(atual))
+                        .setNegativeButton("Cancelar", null)
+                        .show();
+            });
+            f.addView(ensinar);
+            Button experimentar = botao("▶ Experimentar a tarefa");
+            experimentar.setOnClickListener(v -> {
+                ToqueService t = ToqueService.get();
+                if (t == null) { Toast.makeText(this, "Active primeiro a acessibilidade.", Toast.LENGTH_LONG).show(); return; }
+                if (janela[0] != null) janela[0].dismiss();
+                t.executar(atual, Dados.ativarVozAuto(this));
+            });
+            f.addView(experimentar);
+            if (np > 0) {
+                Button esquecer = botao("Esquecer a tarefa ensinada");
+                esquecer.setOnClickListener(v -> {
+                    Rotinas.apagar(this, atual.link);
+                    if (janela[0] != null) janela[0].dismiss();
+                    desenhar();
+                });
+                f.addView(esquecer);
+            }
+        }
+
         AlertDialog.Builder d = new AlertDialog.Builder(this)
                 .setTitle(atual == null ? "Novo projecto" : "Editar projecto")
-                .setView(f)
                 .setPositiveButton("Guardar", (x, y) -> {
                     String n = nome.getText().toString().trim();
                     String l = link.getText().toString().trim();
@@ -342,7 +359,44 @@ public class MainActivity extends Activity {
                 desenhar();
             });
         }
-        d.show();
+        ScrollView rolar = new ScrollView(this);
+        rolar.addView(f);
+        d.setView(rolar);
+        janela[0] = d.show();
+    }
+
+    private String passosTexto(String link) {
+        StringBuilder sb = new StringBuilder();
+        int n = 0;
+        for (Rotinas.Passo p : Rotinas.ler(this, link)) {
+            if (!Rotinas.TOCAR.equals(p.tipo)) continue;
+            n++;
+            sb.append(n == 1 ? "" : " → ").append(n).append(". ").append(p.nome());
+        }
+        return sb.toString();
+    }
+
+    private void definirChave() {
+        LinearLayout f = new LinearLayout(this);
+        f.setOrientation(LinearLayout.VERTICAL);
+        f.setPadding(dp(18), dp(8), dp(18), 0);
+        f.addView(texto("Crie uma chave em console.anthropic.com → API keys e cole-a aqui. Fica guardada só neste telemóvel. A IA só é usada quando um passo ensinado falha.", 13, false));
+        EditText k = campo("sk-ant-…", "");
+        k.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        f.addView(k);
+        AlertDialog.Builder b = new AlertDialog.Builder(this)
+                .setTitle("Chave da API da Anthropic")
+                .setView(f)
+                .setPositiveButton("Guardar", (x, y) -> {
+                    String v = k.getText().toString().trim();
+                    if (!v.isEmpty()) { Cerebro.setChave(this, v); Cerebro.setLigado(this, true); }
+                    desenhar();
+                })
+                .setNegativeButton("Cancelar", null);
+        if (!Cerebro.chave(this).isEmpty()) {
+            b.setNeutralButton("Apagar chave", (x, y) -> { Cerebro.setChave(this, ""); desenhar(); });
+        }
+        b.show();
     }
 
     private android.speech.SpeechRecognizer gravador;
