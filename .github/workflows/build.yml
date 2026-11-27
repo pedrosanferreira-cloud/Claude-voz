@@ -1,0 +1,40 @@
+name: Compilar APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v5
+        with:
+          gradle-version: '8.7'
+      - name: Preparar assinatura
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then echo "Falta o segredo KEYSTORE_B64"; exit 1; fi
+          echo "$KEYSTORE_B64" | tr -d ' \n\r' | base64 -d > "$RUNNER_TEMP/assinatura.jks"
+          echo "KEYSTORE_FILE=$RUNNER_TEMP/assinatura.jks" >> "$GITHUB_ENV"
+      - name: Compilar
+        run: gradle assembleRelease --no-daemon --stacktrace
+      - name: Publicar versão
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/release/*.apk ClaudeVoz.apk
+          gh release create "v1.0.${GITHUB_RUN_NUMBER}" ClaudeVoz.apk \
+            --title "Claude Voz 1.0.${GITHUB_RUN_NUMBER}" \
+            --notes "Descarregue o ficheiro ClaudeVoz.apk no telemóvel e instale." \
+            --latest

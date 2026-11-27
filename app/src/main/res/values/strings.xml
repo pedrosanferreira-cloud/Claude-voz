@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="descricao_acessibilidade">Permite à Claude Voz abrir o projecto pedido na app Claude e tocar sozinha no botão do modo de voz. Só actua dentro da app Claude.</string>
+</resources>
