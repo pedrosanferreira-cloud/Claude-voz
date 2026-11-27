@@ -340,18 +340,76 @@ public class VozService extends Service {
         falar("Qual projecto?", () -> main.postDelayed(this::comecarReconhecimento, 150));
     }
 
+    // tentativas: [serviço de reconhecimento, usar mic dos phones?, língua]
+    private int tentativa = 0;
+    private final List<Object[]> tentativas = new ArrayList<>();
+    private String ultimoErro = "";
+
+    private void prepararTentativas() {
+        tentativas.clear();
+        List<android.content.ComponentName> servicos = servicosReconhecimento(this);
+        String[] linguas = {"pt-PT", "pt-BR"};
+        for (android.content.ComponentName cn : servicos) {
+            tentativas.add(new Object[]{cn, true, linguas[0]});
+            tentativas.add(new Object[]{cn, false, linguas[0]});
+            tentativas.add(new Object[]{cn, false, linguas[1]});
+        }
+        tentativas.add(new Object[]{null, false, "pt-PT"});
+        tentativa = 0;
+    }
+
+    /** Serviços de reconhecimento instalados, com os da Google primeiro. */
+    public static List<android.content.ComponentName> servicosReconhecimento(Context c) {
+        List<android.content.ComponentName> l = new ArrayList<>();
+        try {
+            List<android.content.pm.ResolveInfo> ri = c.getPackageManager().queryIntentServices(
+                    new Intent(android.speech.RecognitionService.SERVICE_INTERFACE), 0);
+            for (android.content.pm.ResolveInfo r : ri) {
+                android.content.ComponentName cn = new android.content.ComponentName(
+                        r.serviceInfo.packageName, r.serviceInfo.name);
+                if (r.serviceInfo.packageName.startsWith("com.google")) l.add(0, cn); else l.add(cn);
+            }
+        } catch (Exception ignored) {}
+        return l;
+    }
+
     private void comecarReconhecimento() {
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+        prepararTentativas();
+        if (tentativas.size() <= 1 && !SpeechRecognizer.isRecognitionAvailable(this)) {
             falar("O reconhecimento de voz não está disponível neste telemóvel.", this::terminar);
             return;
         }
-        ligarMicBluetooth();
+        tentar();
+    }
+
+    private void tentar() {
+        if (tentativa >= tentativas.size()) {
+            desligarMicBluetooth();
+            aviso("Reconhecimento falhou. " + ultimoErro);
+            falar("Não ouvi. Erro " + ultimoErro + ". Tente outra vez.", this::terminar);
+            return;
+        }
+        Object[] t = tentativas.get(tentativa);
+        android.content.ComponentName cn = (android.content.ComponentName) t[0];
+        boolean micPhones = (Boolean) t[1];
+        String lingua = (String) t[2];
+        if (micPhones) ligarMicBluetooth(); else desligarMicBluetooth();
         main.postDelayed(() -> {
-            if (reconhecedor != null) reconhecedor.destroy();
-            reconhecedor = SpeechRecognizer.createSpeechRecognizer(this);
+            if (reconhecedor != null) { try { reconhecedor.destroy(); } catch (Exception ignored) {} }
+            try {
+                reconhecedor = cn != null
+                        ? SpeechRecognizer.createSpeechRecognizer(this, cn)
+                        : SpeechRecognizer.createSpeechRecognizer(this);
+            } catch (Exception e) {
+                ultimoErro = "criar: " + e.getClass().getSimpleName();
+                tentativa++;
+                tentar();
+                return;
+            }
+            final boolean[] ouviuAlgo = {false};
             reconhecedor.setRecognitionListener(new RecognitionListener() {
                 @Override public void onReadyForSpeech(Bundle b) {}
-                @Override public void onBeginningOfSpeech() {}
+                @Override public void onBeginningOfSpeech() { ouviuAlgo[0] = true; }
                 @Override public void onRmsChanged(float v) {}
                 @Override public void onBufferReceived(byte[] b) {}
                 @Override public void onEndOfSpeech() {}
@@ -360,8 +418,17 @@ public class VozService extends Service {
 
                 @Override
                 public void onError(int erro) {
-                    desligarMicBluetooth();
-                    falar("Não ouvi. Carregue outra vez quando quiser.", VozService.this::terminar);
+                    ultimoErro = erro + " " + nomeErro(erro)
+                            + " (" + (cn == null ? "predefinido" : cn.getPackageName()) + ", "
+                            + (micPhones ? "mic phones" : "mic telemóvel") + ", " + lingua + ")";
+                    // se chegou a ouvir voz mas não percebeu, não vale a pena insistir com outro motor
+                    if (ouviuAlgo[0] && erro == SpeechRecognizer.ERROR_NO_MATCH) {
+                        desligarMicBluetooth();
+                        falar("Não percebi. Tente outra vez.", VozService.this::terminar);
+                        return;
+                    }
+                    tentativa++;
+                    tentar();
                 }
 
                 @Override
@@ -373,11 +440,44 @@ public class VozService extends Service {
             });
             Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
             i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-            i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "pt-PT");
+            i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, lingua);
+            i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, lingua);
             i.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5);
             i.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, getPackageName());
-            reconhecedor.startListening(i);
-        }, 900);
+            i.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1500L);
+            i.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L);
+            try {
+                reconhecedor.startListening(i);
+            } catch (Exception e) {
+                ultimoErro = "iniciar: " + e.getClass().getSimpleName();
+                tentativa++;
+                tentar();
+            }
+        }, micPhones ? 1200 : 300);
+    }
+
+    private static String nomeErro(int e) {
+        switch (e) {
+            case 1: return "rede (tempo)";
+            case 2: return "rede";
+            case 3: return "áudio";
+            case 4: return "servidor";
+            case 5: return "cliente";
+            case 6: return "sem fala";
+            case 7: return "não percebeu";
+            case 8: return "ocupado";
+            case 9: return "sem permissão";
+            case 10: return "demasiados pedidos";
+            case 11: return "servidor desligado";
+            case 12: return "língua não suportada";
+            case 13: return "língua indisponível";
+            default: return "";
+        }
+    }
+
+    private void aviso(String t) {
+        main.post(() -> android.widget.Toast.makeText(this, t, android.widget.Toast.LENGTH_LONG).show());
+        getSharedPreferences("claudevoz", MODE_PRIVATE).edit().putString("ultimo_erro", t).apply();
     }
 
     private void tratarResultado(List<String> hipoteses) {

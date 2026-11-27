@@ -231,6 +231,15 @@ public class MainActivity extends Activity {
         novo.setOnClickListener(v -> editar(-1));
         raiz.addView(novo);
 
+        seccao("Diagnóstico");
+        StringBuilder sb = new StringBuilder("Reconhecimento de voz instalado: ");
+        java.util.List<android.content.ComponentName> sv = VozService.servicosReconhecimento(this);
+        if (sv.isEmpty()) sb.append("nenhum");
+        for (android.content.ComponentName cn : sv) sb.append("\n• ").append(cn.getPackageName());
+        String ue = getSharedPreferences("claudevoz", MODE_PRIVATE).getString("ultimo_erro", "");
+        if (!ue.isEmpty()) sb.append("\nÚltimo erro: ").append(ue);
+        raiz.addView(texto(sb.toString(), 12, false));
+
         seccao("4. Versão");
         raiz.addView(texto("Versão instalada: 1.0." + Actualizador.versaoInstalada(this), 14, false));
         Button act = botao("Procurar actualização");
