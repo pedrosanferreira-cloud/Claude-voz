@@ -238,6 +238,8 @@ public class MainActivity extends Activity {
         if (sv.isEmpty()) sb.append("nenhum");
         for (android.content.ComponentName cn : sv) sb.append("\n• ").append(cn.getPackageName());
         String ue = getSharedPreferences("claudevoz", MODE_PRIVATE).getString("ultimo_erro", "");
+        String ut = getSharedPreferences("claudevoz", MODE_PRIVATE).getString("ultimo_toque", "");
+        if (!ut.isEmpty()) sb.append("\nÚltimo toque automático: ").append(ut);
         String uv = getSharedPreferences("claudevoz", MODE_PRIVATE).getString("ultima_voz", "");
         if (!uv.isEmpty()) sb.append("\nÚltima voz: ").append(uv);
         String ok = Motores.descricaoOk(this);

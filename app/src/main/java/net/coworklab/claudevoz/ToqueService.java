@@ -25,7 +25,8 @@ public class ToqueService extends AccessibilityService {
     private static ToqueService instancia;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private long tocarAte = 0;          // enquanto > agora, procura o botão de voz
+    private long tocarAte = 0;
+    private long abertoEm = 0;          // enquanto > agora, procura o botão de voz
     private boolean aprender = false;
     private boolean claudeEmPrimeiroPlano = false;
 
@@ -68,7 +69,17 @@ public class ToqueService extends AccessibilityService {
             startActivity(j);
         }
         if (tocarVoz) {
+            abertoEm = System.currentTimeMillis();
             tocarAte = System.currentTimeMillis() + 15000;
+            handler.postDelayed(() -> {
+                if (tocarAte != 0) {
+                    tocarAte = 0;
+                    AccessibilityNodeInfo r = getRootInActiveWindow();
+                    registar("não conseguiu tocar. Ecrã: "
+                            + (r == null || r.getPackageName() == null ? "?" : r.getPackageName())
+                            + ". Botões: " + (r == null ? "-" : listaBotoes(r)));
+                }
+            }, 15500);
             // tentativas periódicas, além dos eventos de ecrã
             for (int t = 1500; t <= 15000; t += 1000) {
                 handler.postDelayed(this::tentarTocar, t);
@@ -80,15 +91,20 @@ public class ToqueService extends AccessibilityService {
     public void comecarAprender() {
         aprender = true;
         candidatos = null;
-        Intent i = getPackageManager().getLaunchIntentForPackage(Dados.PACOTE_CLAUDE);
-        if (i != null) {
-            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(i);
+        java.util.List<Dados.Projecto> ps = Dados.lerProjectos(this);
+        if (!ps.isEmpty()) {
+            abrirProjecto(ps.get(0).link, false);       // aprender no ecrã de um projecto
+        } else {
+            Intent i = getPackageManager().getLaunchIntentForPackage(Dados.PACOTE_CLAUDE);
+            if (i != null) {
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(i);
+            }
         }
         handler.post(() -> Toast.makeText(this,
                 "Aguarde uns segundos sem tocar em nada…", Toast.LENGTH_LONG).show());
-        handler.postDelayed(() -> capturar(false), 3500);
-        handler.postDelayed(() -> capturar(true), 6000);
+        handler.postDelayed(() -> capturar(false), 4500);
+        handler.postDelayed(() -> capturar(true), 7500);
     }
 
     /** Um botão encontrado no ecrã do Claude. */
@@ -225,6 +241,7 @@ public class ToqueService extends AccessibilityService {
 
     private void tentarTocar() {
         if (System.currentTimeMillis() >= tocarAte) return;
+        if (System.currentTimeMillis() - abertoEm < 2000) return;   // deixar o ecrã carregar
         AccessibilityNodeInfo raiz = getRootInActiveWindow();
         if (raiz == null || raiz.getPackageName() == null
                 || !Dados.PACOTE_CLAUDE.contentEquals(raiz.getPackageName())) return;
@@ -233,6 +250,7 @@ public class ToqueService extends AccessibilityService {
         if (alvo != null) {
             if (clicar(alvo)) {
                 tocarAte = 0;
+                registar("tocou em \"" + rotulo(alvo) + "\"");
                 return;
             }
         }
@@ -244,8 +262,30 @@ public class ToqueService extends AccessibilityService {
                 DisplayMetrics dm = getResources().getDisplayMetrics();
                 tocarEm(xr * dm.widthPixels, yr * dm.heightPixels);
                 tocarAte = 0;
+                registar("não encontrou o botão; tocou na posição guardada. Botões no ecrã: " + listaBotoes(raiz));
             }
         }
+    }
+
+    private String rotulo(AccessibilityNodeInfo n) {
+        CharSequence d = n.getContentDescription(), t = n.getText();
+        if (d != null && d.length() > 0) return d.toString();
+        if (t != null && t.length() > 0) return t.toString();
+        return n.getViewIdResourceName() == null ? "?" : n.getViewIdResourceName();
+    }
+
+    private String listaBotoes(AccessibilityNodeInfo raiz) {
+        java.util.List<Candidato> l = new java.util.ArrayList<>();
+        juntar(raiz, l, getResources().getDisplayMetrics(), 0);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < l.size() && i < 15; i++) sb.append(i == 0 ? "" : " | ").append(l.get(i).rotulo());
+        return sb.toString();
+    }
+
+    private void registar(String t) {
+        String procurado = Dados.botaoDesc(this);
+        getSharedPreferences("claudevoz", MODE_PRIVATE).edit()
+                .putString("ultimo_toque", t + "  [aprendido: \"" + procurado + "\"]").apply();
     }
 
     private AccessibilityNodeInfo procurar(AccessibilityNodeInfo raiz) {
